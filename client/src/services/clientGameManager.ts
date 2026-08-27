@@ -168,7 +168,7 @@ export class ClientGameManager {
     if (game.currentTrick.cards.length >= 4) return game;
 
     const currentPlayer = game.players[game.currentTurnSeat];
-    if (currentPlayer.id !== playerId) return game;
+    if (!currentPlayer || currentPlayer.id !== playerId) return game;
 
     const cardIndex = currentPlayer.cards.findIndex((c) => c.id === cardId);
     if (cardIndex === -1) return game;

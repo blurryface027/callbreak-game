@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { GameState, Room, getValidMoves, selectAICard, calculateAICall } from '@callbreak/shared';
+import { GameState, Room, isValidMove, selectAICard, calculateAICall } from '@callbreak/shared';
 import { io, Socket } from 'socket.io-client';
 import { AuthPage } from './pages/AuthPage.js';
 import { Navbar } from './components/layout/Navbar.js';
@@ -198,17 +198,30 @@ export const App: React.FC = () => {
       setTurnSecondsLeft((secondsLeft) => Math.max(secondsLeft - 1, 0));
     }, 1000);
 
+    // Schedule one turn action — bots at 1.1s, humans at 20s (timeout fallback)
+    let cancelled = false;
     const gameId = gameState.id;
-    const turnDuration = currentPlayer.isAI ? 1100 : 20000;
+    const turnSeat = gameState.currentTurnSeat;
+    const turnPhase = gameState.phase;
+    const turnPlayerId = currentPlayer.id;
+    const isBotTurn = currentPlayer.isAI;
+    const turnDuration = isBotTurn ? 1100 : 20000;
 
     const turnTimer = window.setTimeout(() => {
+      if (cancelled) return;
+
       const current = useGameStore.getState().gameState;
       if (!current || current.id !== gameId) return;
+      if (current.currentTurnSeat !== turnSeat || current.phase !== turnPhase) return;
+      if (current.currentTrick.cards.length >= 4) return;
 
-      const turnPlayer = current.players[current.currentTurnSeat];
-      if (!turnPlayer) return;
+      const turnPlayer = current.players[turnSeat];
+      if (!turnPlayer || turnPlayer.id !== turnPlayerId) return;
 
-      if (turnPlayer.isAI) {
+      if (isBotTurn) {
+        // Bot turn — only bots may act here; blocks stale timers hitting the human
+        if (!turnPlayer.isAI) return;
+
         const updated = clientGameManager.processNextAITurn(current);
         if (updated) {
           if (current.phase === 'playing') {
@@ -219,7 +232,9 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Timeout fallback for human player (Strict 20-second timeout)
+      // Human turn timeout — only after full 20s on the same player's turn
+      if (turnPlayer.isAI) return;
+
       if (current.phase === 'bidding') {
         const bestCall = calculateAICall(turnPlayer.cards, turnPlayer.aiDifficulty || 'medium');
         const updated = clientGameManager.submitCall(current, turnPlayer.id, bestCall);
@@ -228,7 +243,6 @@ export const App: React.FC = () => {
       }
 
       if (current.phase === 'playing') {
-        // Auto-play the best possible legal card: follows lead pattern, spades priority, or lowest duck
         const bestCard = selectAICard(
           turnPlayer.cards,
           current.currentTrick.leadSuit,
@@ -245,6 +259,7 @@ export const App: React.FC = () => {
     }, turnDuration);
 
     return () => {
+      cancelled = true;
       window.clearInterval(countdownTimer);
       window.clearTimeout(turnTimer);
     };
@@ -278,11 +293,31 @@ export const App: React.FC = () => {
   // Play Card (Supports both Local Single Player and Real-time Multiplayer)
   const handlePlayCard = (cardId: string) => {
     if (!gameState) return;
+
+    const currentPlayer = gameState.players[gameState.currentTurnSeat];
+    const humanPlayer = gameState.players.find((p) => p.id === humanUserId);
+    if (!currentPlayer || !humanPlayer) return;
+    if (currentPlayer.id !== humanUserId) return;
+    if (gameState.phase !== 'playing') return;
+    if (gameState.currentTrick.cards.length >= 4) return;
+    if (!humanPlayer.cards.some((c) => c.id === cardId)) return;
+    if (
+      !isValidMove(
+        cardId,
+        humanPlayer.cards,
+        gameState.currentTrick.leadSuit,
+        gameState.currentTrick.cards
+      )
+    ) {
+      return;
+    }
+
     soundFx.playCardPlay();
     if (activeRoom && socket) {
       socket.emit('game:play_card', { roomCode: activeRoom.code, playerId: humanUserId, cardId });
     } else {
       const updated = clientGameManager.playCard(gameState, humanUserId, cardId);
+      if (updated === gameState) return;
       setGameState({ ...updated });
     }
   };

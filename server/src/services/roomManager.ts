@@ -253,13 +253,20 @@ export class RoomManager {
     const game = this.getGame(roomCode);
     if (!game) return;
 
+    const currentPlayer = game.players[game.currentTurnSeat];
+    if (!currentPlayer) return;
+
     if (game.phase === 'bidding') {
-      // Auto-submit bids for all unbidded players
-      game.players.forEach((p) => {
-        if (p.call === null) {
-          p.call = calculateAICall(p.cards, 'medium');
+      if (currentPlayer.isAI) {
+        if (currentPlayer.call === null) {
+          currentPlayer.call = calculateAICall(currentPlayer.cards, currentPlayer.aiDifficulty || 'medium');
         }
-      });
+      } else if (currentPlayer.call === null) {
+        currentPlayer.call = calculateAICall(currentPlayer.cards, 'medium');
+      }
+
+      if (!game.players.every((p) => p.call !== null)) return;
+
       game.phase = 'playing';
       game.currentTurnSeat = (game.dealerSeat + 1) % 4;
       game.currentTrick = {
@@ -274,21 +281,17 @@ export class RoomManager {
       return;
     }
 
-    if (game.phase === 'playing') {
-      const currentPlayer = game.players[game.currentTurnSeat];
-      if (currentPlayer && currentPlayer.cards.length > 0) {
-        // Auto-throw best strategic legal card according to Call Break priority
-        const bestCard = selectAICard(
-          currentPlayer.cards,
-          game.currentTrick.leadSuit,
-          game.currentTrick.cards,
-          currentPlayer.call || 1,
-          currentPlayer.tricksWon,
-          'medium',
-          currentPlayer.id
-        );
-        this.playCard(roomCode, currentPlayer.id, bestCard.id);
-      }
+    if (game.phase === 'playing' && currentPlayer.cards.length > 0) {
+      const bestCard = selectAICard(
+        currentPlayer.cards,
+        game.currentTrick.leadSuit,
+        game.currentTrick.cards,
+        currentPlayer.call || 1,
+        currentPlayer.tricksWon,
+        currentPlayer.aiDifficulty || 'medium',
+        currentPlayer.id
+      );
+      this.playCard(roomCode, currentPlayer.id, bestCard.id);
     }
   }
 
@@ -476,20 +479,29 @@ export class RoomManager {
     const currentPlayer = game.players[game.currentTurnSeat];
     if (!currentPlayer || !currentPlayer.isAI) return;
 
+    const gameId = game.id;
+    const turnSeat = game.currentTurnSeat;
+
     setTimeout(() => {
       try {
-        if (game.phase === 'playing' && game.currentTrick.cards.length < 4) {
-          const card = selectAICard(
-            currentPlayer.cards,
-            game.currentTrick.leadSuit,
-            game.currentTrick.cards,
-            currentPlayer.call || 1,
-            currentPlayer.tricksWon,
-            currentPlayer.aiDifficulty,
-            currentPlayer.id
-          );
-          this.playCard(game.id, currentPlayer.id, card.id);
-        }
+        const freshGame = this.getGame(gameId);
+        if (!freshGame || freshGame.phase !== 'playing') return;
+        if (freshGame.currentTurnSeat !== turnSeat) return;
+        if (freshGame.currentTrick.cards.length >= 4) return;
+
+        const turnPlayer = freshGame.players[turnSeat];
+        if (!turnPlayer?.isAI) return;
+
+        const card = selectAICard(
+          turnPlayer.cards,
+          freshGame.currentTrick.leadSuit,
+          freshGame.currentTrick.cards,
+          turnPlayer.call || 1,
+          turnPlayer.tricksWon,
+          turnPlayer.aiDifficulty || 'medium',
+          turnPlayer.id
+        );
+        this.playCard(gameId, turnPlayer.id, card.id);
       } catch (err) {
         console.error('Error processing AI turn:', err);
       }
